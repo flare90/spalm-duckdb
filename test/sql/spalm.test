@@ -1,0 +1,23 @@
+# name: test/sql/spalm.test
+# description: test spalm extension
+# group: [sql]
+
+# Before we load the extension, this will fail
+statement error
+SELECT spalm('Sam');
+----
+Catalog Error: Scalar Function with name spalm does not exist!
+
+# Require statement will ensure this test is run with this extension loaded
+require spalm
+
+# Confirm the extension works
+query I
+SELECT spalm('Sam');
+----
+Spalm Sam 🐥
+
+query I
+SELECT spalm_openssl_version('Michael') ILIKE 'Spalm Michael, my linked OpenSSL version is OpenSSL%';
+----
+true
