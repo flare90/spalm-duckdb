@@ -1,62 +1,62 @@
+// spalm_extension.cpp
 #define DUCKDB_EXTENSION_MAIN
-
 #include "spalm_extension.hpp"
-#include "duckdb.hpp"
-#include "duckdb/common/exception.hpp"
-#include "duckdb/function/scalar_function.hpp"
-#include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
 
-// OpenSSL linked through vcpkg
-#include <openssl/opensslv.h>
+#include "duckdb/planner/operator/logical_aggregate.hpp"
+#include "duckdb/planner/operator/logical_comparison_join.hpp"
+#include "logical_spalm.hpp"
 
 namespace duckdb {
 
-inline void SpalmScalarFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &name_vector = args.data[0];
-	UnaryExecutor::Execute<string_t, string_t>(name_vector, result, args.size(), [&](string_t name) {
-		return StringVector::AddString(result, "Spalm " + name.GetString() + " 🐥");
-	});
+void SpalmExtension::InjectSpalm(unique_ptr<LogicalOperator> &plan) {
+	if (!plan) {
+		return;
+	}
+
+	if (plan->type == LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY) {
+		if (plan->children[0]->type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
+			auto agg_op = unique_ptr_cast<LogicalOperator, LogicalAggregate>(std::move(plan));
+			auto comparison_join =
+			    unique_ptr_cast<LogicalOperator, LogicalComparisonJoin>(std::move(agg_op->children[0]));
+			auto spalm = make_uniq<LogicalSpalm>(std::move(agg_op), std::move(comparison_join),
+			                                       std::move(comparison_join->children[0]),
+			                                       std::move(comparison_join->children[1]));
+			plan = std::move(spalm);
+		}
+	}
+
+	for (auto &child : plan->children) {
+		InjectSpalm(child);
+	}
 }
 
-inline void SpalmOpenSSLVersionScalarFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &name_vector = args.data[0];
-	UnaryExecutor::Execute<string_t, string_t>(name_vector, result, args.size(), [&](string_t name) {
-		return StringVector::AddString(result, "Spalm " + name.GetString() + ", my linked OpenSSL version is " +
-		                                           OPENSSL_VERSION_TEXT);
-	});
+static void OptimizePlan(OptimizerExtensionInput &input, unique_ptr<LogicalOperator> &plan) {
+	SpalmExtension::InjectSpalm(plan);
 }
 
-static void LoadInternal(ExtensionLoader &loader) {
-	// Register a scalar function
-	auto spalm_scalar_function = ScalarFunction("spalm", {LogicalType::VARCHAR}, LogicalType::VARCHAR, SpalmScalarFun);
-	loader.RegisterFunction(spalm_scalar_function);
+void SpalmExtension::Load(DuckDB &db) {
+	try {
+		printf("Loading Spalm extension...\n");
 
-	// Register another scalar function
-	auto spalm_openssl_version_scalar_function = ScalarFunction("spalm_openssl_version", {LogicalType::VARCHAR},
-	                                                            LogicalType::VARCHAR, SpalmOpenSSLVersionScalarFun);
-	loader.RegisterFunction(spalm_openssl_version_scalar_function);
-}
+		auto optimizer_extension = make_uniq<OptimizerExtension>();
+		optimizer_extension->optimize_function = OptimizePlan;
+		db.instance->config.optimizer_extensions.push_back(std::move(*optimizer_extension));
 
-void SpalmExtension::Load(ExtensionLoader &loader) {
-	LoadInternal(loader);
-}
-std::string SpalmExtension::Name() {
-	return "spalm";
-}
-
-std::string SpalmExtension::Version() const {
-#ifdef EXT_VERSION_SPALM
-	return EXT_VERSION_SPALM;
-#else
-	return "";
-#endif
+		printf("Spalm extension loaded successfully\n");
+	} catch (const std::exception &e) {
+		printf("Error loading Spalm extension: %s\n", e.what());
+	}
 }
 
 } // namespace duckdb
 
 extern "C" {
+DUCKDB_EXTENSION_API void spalm_extension_init(duckdb::DatabaseInstance &db) {
+	duckdb::DuckDB db_wrapper(db);
+	db_wrapper.LoadExtension<duckdb::SpalmExtension>();
+}
 
-DUCKDB_CPP_EXTENSION_ENTRY(spalm, loader) {
-	duckdb::LoadInternal(loader);
+DUCKDB_EXTENSION_API const char *spalm_extension_version() {
+	return duckdb::DuckDB::LibraryVersion();
 }
 }
